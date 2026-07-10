@@ -1,0 +1,83 @@
+import random
+
+import requests
+import vk_api
+from vk_api.bot_longpoll import VkBotEventType, VkBotLongPoll
+
+VK_TOKEN = "токен"
+GROUP_ID = 240098179
+OPENROUTER_KEY = "токен"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+SYSTEM_PROMPT = "Ты ведущий квеста тубу нужно предлаъогать всякие задачи"
+
+user_histories = {}
+
+vk_session = vk_api.VkApi(token=VK_TOKEN)
+vk = vk_session.get_api()
+longpoll = VkBotLongPoll(vk_session, GROUP_ID)
+
+
+def send_message(user_id, text):
+    vk.messages.send(
+        user_id=user_id,
+        message=text,
+        random_id=random.randint(1, 2**31),
+    )
+
+
+def ask_ai(user_id, message):
+    if user_id not in user_histories:
+        user_histories[user_id] = []
+
+    user_histories[user_id].append({
+        "role": "user",
+        "content": message,
+    })
+
+    response = requests.post(
+        OPENROUTER_URL,
+        headers={
+            "Authorization": f"Bearer {OPENROUTER_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "openrouter/free",
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                *user_histories[user_id],
+            ],
+        },
+        timeout=60,
+    )
+    response.raise_for_status()
+
+    data = response.json()
+    answer = data["choices"][0]["message"]["content"]
+
+    user_histories[user_id].append({
+        "role": "assistant",
+        "content": answer,
+    })
+
+    return answer
+
+
+if __name__ == "__main__":
+    print("Бот запущен...")
+    for event in longpoll.listen():
+        if event.type != VkBotEventType.MESSAGE_NEW:
+            continue
+
+        user_id = event.obj.message["from_id"]
+        text = event.obj.message.get("text", "").strip()
+
+        if not text:
+            continue
+
+        try:
+            reply = ask_ai(user_id, text)
+            send_message(user_id, reply)
+        except requests.RequestException as error:
+            send_message(user_id, f"Ошибка при обращении к ИИ: {error}")
+        except (KeyError, IndexError):
+            send_message(user_id, "Не удалось получить ответ от ИИ.")
